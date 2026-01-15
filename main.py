@@ -30,8 +30,9 @@ JUMP_2_LOCK = 1.30
 HARD_TP = 3.00
 HARD_SL_USD = 1.00
 
-# ================== TELEGRAM MWIBA CONTROL ==================
-async def check_remote_commands():
+# ================== TELEGRAM MWIBA CONTROL & STATUS ==================
+async def check_remote_commands(acc, conn):
+    """Commands: Mwiba Open, Mwiba Close, Mwiba Status"""
     global BOT_ACTIVE, _last_update_id
     url = f"https://api.telegram.org/bot{TG_TOKEN}/getUpdates"
     
@@ -52,6 +53,19 @@ async def check_remote_commands():
                             elif "mwiba open" in msg_text:
                                 BOT_ACTIVE = True
                                 await tg_report("🟢 <b>MWIBA BOT: OPEN</b>\nStatus: Hunting...")
+                            elif "mwiba status" in msg_text:
+                                # Pata habari za akaunti
+                                info = await conn.get_account_information()
+                                positions = await conn.get_positions()
+                                status_msg = (
+                                    f"📊 <b>MWIBA ACCOUNT STATUS</b>\n\n"
+                                    f"💰 Balance: <code>${info['balance']:.2f}</code>\n"
+                                    f"📈 Equity: <code>${info['equity']:.2f}</code>\n"
+                                    f"📉 Profit: <code>${info['profit']:.2f}</code>\n"
+                                    f"📂 Open Trades: <code>{len(positions)}</code>\n"
+                                    f"🤖 Active: <code>{'YES' if BOT_ACTIVE else 'NO'}</code>"
+                                )
+                                await tg_report(status_msg)
             except: pass
             await asyncio.sleep(5)
 
@@ -83,22 +97,15 @@ def institutional_ema(candles, period):
     return ema_val
 
 # ================== MWIBA SCALPER ENGINE ==================
-async def scalper():
+async def scalper(acc, conn):
     global BOT_ACTIVE
-    api = MetaApi(TOKEN)
-    
-    try:
-        acc = await api.metatrader_account_api.get_account(ACCOUNT_ID)
-        conn = acc.get_rpc_connection()
-        await conn.connect()
-        await conn.wait_synchronized()
-        
-        await tg_report("⚔️ <b>MWIBA V7.5 SNIPER ONLINE</b>\nFixed: Candle Data Error Resolved")
+    await tg_report("⚔️ <b>MWIBA V7.5 SNIPER ONLINE</b>\nCommands: Open, Close, Status")
 
-        while True:
-            if not BOT_ACTIVE:
-                await asyncio.sleep(10); continue
+    while True:
+        if not BOT_ACTIVE:
+            await asyncio.sleep(10); continue
 
+        try:
             positions = await conn.get_positions()
             
             for p in positions:
@@ -133,7 +140,6 @@ async def scalper():
                     if any(pos['symbol'] == sym for pos in positions): continue
                     
                     try:
-                        # FIX: Using 'acc' instead of 'conn' for candles
                         candles = await acc.get_candles(sym, TIMEFRAME, 100)
                         if not candles: continue
                         
@@ -144,26 +150,36 @@ async def scalper():
                         
                         if price > ema_val and rsi_val < 30:
                             await conn.create_market_buy_order(sym, BASE_LOT, round(price - 0.70, 2), 0)
-                            await tg_report(f"🚀 <b>MWIBA BUY</b>\nSymbol: {sym}")
+                            await tg_report(f"🚀 <b>MWIBA BUY</b>\nSymbol: {sym}\nRSI: {rsi_val:.1f}")
                             await asyncio.sleep(5)
 
                         elif price < ema_val and rsi_val > 70:
                             await conn.create_market_sell_order(sym, BASE_LOT, round(price + 0.70, 2), 0)
-                            await tg_report(f"📉 <b>MWIBA SELL</b>\nSymbol: {sym}")
+                            await tg_report(f"📉 <b>MWIBA SELL</b>\nSymbol: {sym}\nRSI: {rsi_val:.1f}")
                             await asyncio.sleep(5)
                     except: continue
 
-            await asyncio.sleep(15)
-    except Exception as e:
-        print(f"Main Error: {e}")
-        await asyncio.sleep(10)
+        except Exception as e:
+            print(f"Loop Error: {e}")
+            
+        await asyncio.sleep(15)
 
-# ================== DEPLOYMENT FIX ==================
+# ================== MAIN STARTUP ==================
 async def main():
-    # Start Health Check and Telegram Listener in Background
-    threading.Thread(target=lambda: HTTPServer(('0.0.0.0', 8080), BaseHTTPRequestHandler).serve_forever(), daemon=True).start()
-    asyncio.create_task(check_remote_commands())
-    await scalper()
+    api = MetaApi(TOKEN)
+    acc = await api.metatrader_account_api.get_account(ACCOUNT_ID)
+    conn = acc.get_rpc_connection()
+    await conn.connect()
+    await conn.wait_synchronized()
+
+    # Health Check Thread
+    threading.Thread(target=lambda: HTTPServer(('0.0.0.0', int(os.environ.get("PORT", 8080))), BaseHTTPRequestHandler).serve_forever(), daemon=True).start()
+    
+    # Run Telegram Listener and Scalper
+    await asyncio.gather(
+        check_remote_commands(acc, conn),
+        scalper(acc, conn)
+    )
 
 if __name__ == "__main__":
     asyncio.run(main())
