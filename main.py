@@ -1,4 +1,4 @@
-import os, asyncio, random, pytz, threading
+import os, asyncio, random, pytz, threading, json
 from datetime import datetime
 from metaapi_cloud_sdk import MetaApi
 import aiohttp
@@ -7,20 +7,18 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 # ================== ENV (RENDER FIX) ==================
 META_API_TOKEN = os.getenv("META_API_TOKEN")
 ACCOUNT_ID = os.getenv("ACCOUNT_ID")
-# HAPA: Nimesahihisha majina ili yafanane na Render Variables zako
 TELEGRAM_TOKEN = os.getenv("TG_TOKEN") 
 CHAT_ID_RAW = os.getenv("TG_CHAT_ID")
 
-# Error handling kwa ajili ya CHAT_ID
 if CHAT_ID_RAW:
     CHAT_ID = int(CHAT_ID_RAW)
 else:
-    CHAT_ID = 0 # Itatoa error baadae badala ya kuua bot kikatili
+    CHAT_ID = 0 
 
 # ================== BOT STATE ==================
 BOT_ACTIVE = True
 LAST_UPDATE_ID = 0
-AI_HOURS = {}  # Hourly wins/losses for adaptive AI
+AI_HOURS = {}  
 STATS = {"wins":0, "losses":0}
 
 # ================== TRADING CONFIG ==================
@@ -31,13 +29,10 @@ RSI_PERIOD = 14
 LOT = 0.01
 MAX_POSITIONS = 3
 
-# Profit / Stop logic
 LOCK1_PROFIT, LOCK1_SL = 1.5, 0.80
 LOCK2_PROFIT, LOCK2_SL = 2.0, 1.40
 FINAL_TP = 3.0
 HARD_SL = -1.0
-
-# Spread check (points)
 MAX_SPREAD = 35
 
 # ================== TELEGRAM ==================
@@ -47,17 +42,19 @@ async def tg_send(msg):
     payload = {"chat_id": CHAT_ID, "text": msg, "parse_mode": "HTML"}
     async with aiohttp.ClientSession() as s:
         try:
-            await s.post(url, json=payload, timeout=5)
+            async with s.post(url, json=payload, timeout=10) as r:
+                return await r.json()
         except: pass
 
 async def telegram_listener(conn):
     global BOT_ACTIVE, LAST_UPDATE_ID
     if not TELEGRAM_TOKEN: return
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getUpdates"
-    async with aiohttp.ClientSession() as s:
-        while True:
-            try:
-                params = {"offset": LAST_UPDATE_ID + 1, "timeout":10}
+    
+    while True:
+        try:
+            async with aiohttp.ClientSession() as s:
+                params = {"offset": LAST_UPDATE_ID + 1, "timeout": 30}
                 async with s.get(url, params=params) as r:
                     data = await r.json()
                     for u in data.get("result", []):
@@ -85,8 +82,10 @@ async def telegram_listener(conn):
                                 for p in pos:
                                     msg_out += f"{p['symbol']} | ${p['unrealizedProfit']:.2f}\n"
                                 await tg_send(msg_out)
-            except: pass
-            await asyncio.sleep(5)
+        except Exception as e:
+            print(f"TG Listener Error: {e}")
+            await asyncio.sleep(10)
+        await asyncio.sleep(2)
 
 # ================== INDICATORS ==================
 def rsi(closes, period=14):
@@ -108,7 +107,7 @@ def ema(candles, period):
         e = p*k+(1-k)*e
     return e
 
-# ================== SESSION & NEWS ==================
+# ================== SESSION ==================
 def in_session():
     now = datetime.utcnow()
     h = now.hour + now.minute/60
@@ -116,9 +115,10 @@ def in_session():
     ny = 13.5 <= h <= 17
     return london or ny
 
-# ================== SCALPER ==================
+# ================== SCALPER CORE ==================
 async def manage_position(conn, pos_id, sym, entry, ptype):
     global STATS, AI_HOURS
+    print(f"DEBUG: Monitoring trade {pos_id} for {sym}")
     while True:
         try:
             positions = await conn.get_positions()
@@ -146,16 +146,20 @@ async def manage_position(conn, pos_id, sym, entry, ptype):
                 AI_HOURS[hour] = AI_HOURS.get(hour,0)-1
                 await tg_send(f"❌ <b>STOP LOSS HIT</b> {sym} ${profit:.2f}")
                 return
-        except: pass
+        except Exception as e:
+            print(f"Manage Trade Error: {e}")
         await asyncio.sleep(5)
 
 async def scalper(acc, conn):
     await tg_send("⚔️ <b>MWIBA BOT V12 ONLINE</b>")
     while True:
-        if not BOT_ACTIVE or not in_session():
-            await asyncio.sleep(10); continue
-
         try:
+            # Keep-alive signal for Render Logs
+            print(f"DEBUG: Scalper heartbeat {datetime.now()} | Active: {BOT_ACTIVE}")
+            
+            if not BOT_ACTIVE or not in_session():
+                await asyncio.sleep(30); continue
+
             positions = await conn.get_positions()
             if len(positions) < MAX_POSITIONS:
                 shuffled_syms = list(SYMBOLS)
@@ -178,25 +182,56 @@ async def scalper(acc, conn):
                         order = await conn.create_market_sell_order(sym, LOT, 0, 0)
                         await tg_send(f"📉 SELL {sym} | RSI {r_val:.1f}")
                         asyncio.create_task(manage_position(conn, order["id"], sym, price, "POSITION_TYPE_SELL"))
-        except: pass
+        except Exception as e:
+            print(f"Scalper Main Loop Error: {e}")
         await asyncio.sleep(15)
 
-# ================== MAIN ==================
-async def main():
-    api = MetaApi(META_API_TOKEN)
-    acc = await api.metatrader_account_api.get_account(ACCOUNT_ID)
-    conn = acc.get_rpc_connection()
-    await conn.connect()
-    await conn.wait_synchronized()
+# ================== RENDER HEALTH CHECK ==================
+class HealthHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header('Content-type', 'text/plain')
+        self.end_headers()
+        self.wfile.write(b"MWIBA BOT IS ALIVE")
 
-    # Health server
+def run_health_server():
     port = int(os.environ.get("PORT", 8080))
-    threading.Thread(target=lambda: HTTPServer(("0.0.0.0", port), BaseHTTPRequestHandler).serve_forever(), daemon=True).start()
+    server = HTTPServer(("0.0.0.0", port), HealthHandler)
+    server.serve_forever()
 
-    await asyncio.gather(
-        telegram_listener(conn),
-        scalper(acc, conn)
-    )
+# ================== RECONNECT LOGIC (THE FIX) ==================
+async def start_bot():
+    while True:
+        try:
+            print("DEBUG: Connecting to MetaApi...")
+            api = MetaApi(META_API_TOKEN)
+            acc = await api.metatrader_account_api.get_account(ACCOUNT_ID)
+            
+            # Hakikisha tuko synchronized
+            if acc.state != 'DEPLOYED':
+                print("DEBUG: Account not deployed. Waiting...")
+                await asyncio.sleep(10)
+                continue
+
+            conn = acc.get_rpc_connection()
+            await conn.connect()
+            await conn.wait_synchronized()
+            print("DEBUG: Connection Synchronized!")
+
+            await asyncio.gather(
+                telegram_listener(conn),
+                scalper(acc, conn)
+            )
+        except Exception as e:
+            print(f"CRITICAL ERROR: {e}. Reconnecting in 10s...")
+            await asyncio.sleep(10)
 
 if __name__=="__main__":
-    asyncio.run(main())
+    # Start Health Server in background thread
+    threading.Thread(target=run_health_server, daemon=True).start()
+    
+    # Run main bot loop
+    try:
+        asyncio.run(start_bot())
+    except KeyboardInterrupt:
+        pass
