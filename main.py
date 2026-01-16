@@ -1,136 +1,209 @@
-import os, asyncio, random, pytz, datetime
-from dotenv import load_dotenv
+import os, asyncio, random, pytz
+from datetime import datetime
 from metaapi_cloud_sdk import MetaApi
-import telebot
+import aiohttp
+from http.server import BaseHTTPRequestHandler, HTTPServer
 
-# ================= LOAD ENV =================
-load_dotenv()
+# ================== ENV (RENDER) ==================
 META_API_TOKEN = os.getenv("META_API_TOKEN")
 ACCOUNT_ID = os.getenv("ACCOUNT_ID")
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = int(os.getenv("CHAT_ID"))
 
-bot = telebot.TeleBot(TELEGRAM_TOKEN)
+# ================== BOT STATE ==================
+BOT_ACTIVE = True
+LAST_UPDATE_ID = 0
+AI_HOURS = {}  # Hourly wins/losses for adaptive AI
+STATS = {"wins":0, "losses":0}
 
-# ================= GLOBAL STATE =================
-BOT_ACTIVE = False
-AI_WIN_HOURS = {}
-STATS = {"wins": 0, "losses": 0}
-SYMBOLS = ["EURUSD", "GBPUSD"]
+# ================== TRADING CONFIG ==================
+SYMBOLS = ["XAUUSD", "NAS100", "US30", "SPX500", "GER40"]
+TIMEFRAME = "5m"
+EMA_PERIOD = 50
+RSI_PERIOD = 14
 LOT = 0.01
+MAX_POSITIONS = 3
 
-# ================= TELEGRAM COMMANDS =================
-@bot.message_handler(commands=["startbot"])
-def start_bot(msg):
-    global BOT_ACTIVE
-    BOT_ACTIVE = True
-    bot.send_message(CHAT_ID, "🤖 BOT STARTED")
+# Profit / Stop logic
+LOCK1_PROFIT, LOCK1_SL = 1.5, 0.80
+LOCK2_PROFIT, LOCK2_SL = 2.0, 1.40
+FINAL_TP = 3.0
+HARD_SL = -1.0
 
-@bot.message_handler(commands=["stopbot"])
-def stop_bot(msg):
-    global BOT_ACTIVE
-    BOT_ACTIVE = False
-    bot.send_message(CHAT_ID, "⛔ BOT STOPPED")
+# Spread check (points)
+MAX_SPREAD = 35
 
-@bot.message_handler(commands=["status"])
-def status(msg):
-    bot.send_message(CHAT_ID, f"📊 Bot Active: {BOT_ACTIVE}")
+# ================== TELEGRAM ==================
+async def tg_send(msg):
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    payload = {"chat_id": CHAT_ID, "text": msg, "parse_mode": "HTML"}
+    async with aiohttp.ClientSession() as s:
+        try:
+            await s.post(url, json=payload, timeout=5)
+        except: pass
 
-@bot.message_handler(commands=["stats"])
-def stats(msg):
-    text = f"🏆 Wins: {STATS['wins']}\n❌ Losses: {STATS['losses']}\n🧠 Learned Hours: {AI_WIN_HOURS}"
-    bot.send_message(CHAT_ID, text)
+async def telegram_listener(conn):
+    global BOT_ACTIVE, LAST_UPDATE_ID
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getUpdates"
+    async with aiohttp.ClientSession() as s:
+        while True:
+            try:
+                params = {"offset": LAST_UPDATE_ID + 1, "timeout":10}
+                r = await s.get(url, params=params)
+                data = await r.json()
+                for u in data.get("result", []):
+                    LAST_UPDATE_ID = u["update_id"]
+                    text = u.get("message", {}).get("text","").lower()
 
-# ================= TIME FILTER =================
-def session_allowed():
-    tz = pytz.timezone("Europe/London")
-    hour = datetime.datetime.now(tz).hour
-    return (8 <= hour <= 11) or (13 <= hour <= 16)
+                    if text in ["/open", "/startbot"]:
+                        BOT_ACTIVE = True
+                        await tg_send("🟢 <b>MWIBA BOT OPEN</b>")
+                    elif text in ["/close", "/stopbot"]:
+                        BOT_ACTIVE = False
+                        await tg_send("🔴 <b>MWIBA BOT CLOSED</b>")
+                    elif text == "/status":
+                        info = await conn.get_account_information()
+                        pos = await conn.get_positions()
+                        await tg_send(
+                            f"📊 <b>STATUS</b>\nBalance: ${info['balance']:.2f}\nEquity: ${info['equity']:.2f}\nOpen Trades: {len(pos)}\nActive: {'YES' if BOT_ACTIVE else 'NO'}"
+                        )
+                    elif text == "/positions":
+                        pos = await conn.get_positions()
+                        if not pos: await tg_send("📂 No open positions")
+                        else:
+                            msg = "📂 <b>OPEN POSITIONS</b>\n"
+                            for p in pos:
+                                msg += f"{p['symbol']} | ${p['unrealizedProfit']:.2f}\n"
+                            await tg_send(msg)
+                    elif text == "/balance":
+                        info = await conn.get_account_information()
+                        await tg_send(f"💰 Balance: ${info['balance']:.2f}\nEquity: ${info['equity']:.2f}")
+            except: pass
+            await asyncio.sleep(5)
 
-# ================= AI FILTER =================
-def ai_hour_allowed():
-    tz = pytz.timezone("Europe/London")
-    hour = datetime.datetime.now(tz).hour
-    if not AI_WIN_HOURS:
-        return True
-    return AI_WIN_HOURS.get(hour, 0) >= 0
+# ================== INDICATORS ==================
+def rsi(closes, period=14):
+    if len(closes) < period+1: return 50
+    gains = losses = 0
+    for i in range(-period, 0):
+        diff = closes[i]-closes[i-1]
+        gains += max(diff,0)
+        losses += abs(min(diff,0))
+    if losses==0: return 100
+    rs = gains/losses
+    return 100-(100/(1+rs))
 
-# ================= NEWS FILTER (SAFE MOCK) =================
+def ema(candles, period):
+    prices = [(c["high"]+c["low"]+c["close"])/3 for c in candles]
+    k = 2/(period+1)
+    e = prices[0]
+    for p in prices[1:]:
+        e = p*k+(1-k)*e
+    return e
+
+# ================== SESSION & NEWS ==================
+def in_session():
+    # London 08:00-11:30 GMT, NY 13:30-17:00 GMT
+    now = datetime.utcnow()
+    h = now.hour + now.minute/60
+    london = 8 <= h <= 11.5
+    ny = 13.5 <= h <= 17
+    return london or ny
+
 def news_block():
-    return random.choice([False, False, False, True])  # simulate rare block
+    # Simulate news filter
+    return random.choice([False]*8+[True]*2)  # 20% chance block
 
-# ================= PROFIT MANAGEMENT =================
-async def manage_position(conn, position):
-    soft_sl = -0.8
+# ================== SCALPER ==================
+async def manage_position(conn, pos):
+    global STATS, AI_HOURS
+    pid = pos["id"]
+    entry = float(pos["openPrice"])
+    vol = float(pos["volume"])
+    ptype = pos["type"]
     while True:
-        pos = (await conn.get_positions()).get(position['id'])
-        if not pos:
+        positions = await conn.get_positions()
+        pos = next((p for p in positions if p["id"]==pid), None)
+        if not pos: return
+        profit = float(pos["unrealizedProfit"])
+        hour = datetime.utcnow().hour
+
+        # Trailing stop
+        if profit >= FINAL_TP:
+            await conn.close_position(pid)
+            STATS["wins"] +=1
+            AI_HOURS[hour] = AI_HOURS.get(hour,0)+1
+            await tg_send(f"🎯 <b>TARGET HIT</b> {pos['symbol']} ${profit:.2f}")
             return
-
-        profit = pos['profit']
-
-        if profit >= 3.0:
-            await conn.close_position(position['id'])
-            STATS["wins"] += 1
-            hour = datetime.datetime.utcnow().hour
-            AI_WIN_HOURS[hour] = AI_WIN_HOURS.get(hour, 0) + 1
-            bot.send_message(CHAT_ID, "🎯 TARGET ACHIEVED +$3 ✅")
+        elif profit >= LOCK2_PROFIT:
+            await conn.modify_position(pid, entry + LOCK2_SL if ptype=="POSITION_TYPE_BUY" else entry - LOCK2_SL,0)
+        elif profit >= LOCK1_PROFIT:
+            await conn.modify_position(pid, entry + LOCK1_SL if ptype=="POSITION_TYPE_BUY" else entry - LOCK1_SL,0)
+        elif profit <= HARD_SL:
+            await conn.close_position(pid)
+            STATS["losses"] +=1
+            AI_HOURS[hour] = AI_HOURS.get(hour,0)-1
+            await tg_send(f"❌ <b>STOP LOSS HIT</b> {pos['symbol']} ${profit:.2f}")
             return
-
-        if profit >= 2.0:
-            soft_sl = 1.40
-            bot.send_message(CHAT_ID, "🔒 SL moved → $1.40")
-
-        elif profit >= 1.5:
-            soft_sl = 0.80
-            bot.send_message(CHAT_ID, "🔒 SL moved → $0.80")
-
-        if profit <= soft_sl:
-            await conn.close_position(position['id'])
-            STATS["losses"] += 1
-            bot.send_message(CHAT_ID, f"❌ STOP HIT @ {profit}$")
-            return
-
         await asyncio.sleep(2)
 
-# ================= TRADE LOGIC =================
-async def trade_loop():
-    api = MetaApi(META_API_TOKEN)
-    account = await api.metatrader_account_api.get_account(ACCOUNT_ID)
-    await account.deploy()
-    await account.wait_connected()
-    conn = account.get_rpc_connection()
-    await conn.connect()
-
-    bot.send_message(CHAT_ID, "✅ Trading Engine Connected")
+async def scalper(acc, conn):
+    await tg_send("⚔️ <b>MWIBA BOT V12 ONLINE</b>")
 
     while True:
         if not BOT_ACTIVE:
-            await asyncio.sleep(2)
+            await asyncio.sleep(5)
             continue
-
-        if not session_allowed() or not ai_hour_allowed() or news_block():
+        if not in_session() or news_block():
             await asyncio.sleep(5)
             continue
 
         positions = await conn.get_positions()
-        if positions:
-            await asyncio.sleep(3)
+        if len(positions)>=MAX_POSITIONS:
+            await asyncio.sleep(5)
             continue
 
-        symbol = random.choice(SYMBOLS)
-        order = await conn.create_market_buy_order(symbol, LOT)
+        random.shuffle(SYMBOLS)
+        for sym in SYMBOLS:
+            if any(p["symbol"]==sym for p in positions):
+                continue
+            candles = await acc.get_candles(sym,TIMEFRAME,100)
+            if not candles: continue
+            closes = [c["close"] for c in candles]
+            price = closes[-1]
+            e = ema(candles,EMA_PERIOD)
+            r = rsi(closes,RSI_PERIOD)
 
-        bot.send_message(CHAT_ID, f"📈 Trade Opened: {symbol}")
-        asyncio.create_task(manage_position(conn, order))
+            # BUY
+            if price>e and r<30:
+                order = await conn.create_market_buy_order(sym,LOT,0,0)
+                await tg_send(f"🚀 BUY {sym} | RSI {r:.1f}")
+                asyncio.create_task(manage_position(conn, order))
+                await asyncio.sleep(random.uniform(2,4))
+            # SELL
+            elif price<e and r>70:
+                order = await conn.create_market_sell_order(sym,LOT,0,0)
+                await tg_send(f"📉 SELL {sym} | RSI {r:.1f}")
+                asyncio.create_task(manage_position(conn, order))
+                await asyncio.sleep(random.uniform(2,4))
 
-        await asyncio.sleep(random.uniform(10, 20))
+        await asyncio.sleep(10)
 
-# ================= RUN =================
-def run():
-    loop = asyncio.get_event_loop()
-    loop.create_task(trade_loop())
-    bot.infinity_polling()
+# ================== MAIN ==================
+async def main():
+    api = MetaApi(META_API_TOKEN)
+    acc = await api.metatrader_account_api.get_account(ACCOUNT_ID)
+    conn = acc.get_rpc_connection()
+    await conn.connect()
+    await conn.wait_synchronized()
 
-if __name__ == "__main__":
-    run()
+    # Health server
+    threading.Thread(target=lambda: HTTPServer(("0.0.0.0",int(os.environ.get("PORT",8080))),BaseHTTPRequestHandler).serve_forever(),daemon=True).start()
+
+    await asyncio.gather(
+        telegram_listener(conn),
+        scalper(acc,conn)
+    )
+
+if __name__=="__main__":
+    asyncio.run(main())
