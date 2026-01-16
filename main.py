@@ -1,14 +1,21 @@
-import os, asyncio, random, pytz
+import os, asyncio, random, pytz, threading
 from datetime import datetime
 from metaapi_cloud_sdk import MetaApi
 import aiohttp
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
-# ================== ENV (RENDER) ==================
+# ================== ENV (RENDER FIX) ==================
 META_API_TOKEN = os.getenv("META_API_TOKEN")
 ACCOUNT_ID = os.getenv("ACCOUNT_ID")
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-CHAT_ID = int(os.getenv("CHAT_ID"))
+# HAPA: Nimesahihisha majina ili yafanane na Render Variables zako
+TELEGRAM_TOKEN = os.getenv("TG_TOKEN") 
+CHAT_ID_RAW = os.getenv("TG_CHAT_ID")
+
+# Error handling kwa ajili ya CHAT_ID
+if CHAT_ID_RAW:
+    CHAT_ID = int(CHAT_ID_RAW)
+else:
+    CHAT_ID = 0 # Itatoa error baadae badala ya kuua bot kikatili
 
 # ================== BOT STATE ==================
 BOT_ACTIVE = True
@@ -35,6 +42,7 @@ MAX_SPREAD = 35
 
 # ================== TELEGRAM ==================
 async def tg_send(msg):
+    if not TELEGRAM_TOKEN or not CHAT_ID: return
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     payload = {"chat_id": CHAT_ID, "text": msg, "parse_mode": "HTML"}
     async with aiohttp.ClientSession() as s:
@@ -44,40 +52,39 @@ async def tg_send(msg):
 
 async def telegram_listener(conn):
     global BOT_ACTIVE, LAST_UPDATE_ID
+    if not TELEGRAM_TOKEN: return
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getUpdates"
     async with aiohttp.ClientSession() as s:
         while True:
             try:
                 params = {"offset": LAST_UPDATE_ID + 1, "timeout":10}
-                r = await s.get(url, params=params)
-                data = await r.json()
-                for u in data.get("result", []):
-                    LAST_UPDATE_ID = u["update_id"]
-                    text = u.get("message", {}).get("text","").lower()
+                async with s.get(url, params=params) as r:
+                    data = await r.json()
+                    for u in data.get("result", []):
+                        LAST_UPDATE_ID = u["update_id"]
+                        msg = u.get("message", {})
+                        text = msg.get("text","").lower()
 
-                    if text in ["/open", "/startbot"]:
-                        BOT_ACTIVE = True
-                        await tg_send("🟢 <b>MWIBA BOT OPEN</b>")
-                    elif text in ["/close", "/stopbot"]:
-                        BOT_ACTIVE = False
-                        await tg_send("🔴 <b>MWIBA BOT CLOSED</b>")
-                    elif text == "/status":
-                        info = await conn.get_account_information()
-                        pos = await conn.get_positions()
-                        await tg_send(
-                            f"📊 <b>STATUS</b>\nBalance: ${info['balance']:.2f}\nEquity: ${info['equity']:.2f}\nOpen Trades: {len(pos)}\nActive: {'YES' if BOT_ACTIVE else 'NO'}"
-                        )
-                    elif text == "/positions":
-                        pos = await conn.get_positions()
-                        if not pos: await tg_send("📂 No open positions")
-                        else:
-                            msg = "📂 <b>OPEN POSITIONS</b>\n"
-                            for p in pos:
-                                msg += f"{p['symbol']} | ${p['unrealizedProfit']:.2f}\n"
-                            await tg_send(msg)
-                    elif text == "/balance":
-                        info = await conn.get_account_information()
-                        await tg_send(f"💰 Balance: ${info['balance']:.2f}\nEquity: ${info['equity']:.2f}")
+                        if text in ["/open", "/startbot", "mwiba open"]:
+                            BOT_ACTIVE = True
+                            await tg_send("🟢 <b>MWIBA BOT OPEN</b>")
+                        elif text in ["/close", "/stopbot", "mwiba close"]:
+                            BOT_ACTIVE = False
+                            await tg_send("🔴 <b>MWIBA BOT CLOSED</b>")
+                        elif text in ["/status", "mwiba status"]:
+                            info = await conn.get_account_information()
+                            pos = await conn.get_positions()
+                            await tg_send(
+                                f"📊 <b>STATUS</b>\nBalance: ${info['balance']:.2f}\nEquity: ${info['equity']:.2f}\nOpen Trades: {len(pos)}\nActive: {'YES' if BOT_ACTIVE else 'NO'}"
+                            )
+                        elif text in ["/positions", "mwiba positions"]:
+                            pos = await conn.get_positions()
+                            if not pos: await tg_send("📂 No open positions")
+                            else:
+                                msg_out = "📂 <b>OPEN POSITIONS</b>\n"
+                                for p in pos:
+                                    msg_out += f"{p['symbol']} | ${p['unrealizedProfit']:.2f}\n"
+                                await tg_send(msg_out)
             except: pass
             await asyncio.sleep(5)
 
@@ -87,8 +94,8 @@ def rsi(closes, period=14):
     gains = losses = 0
     for i in range(-period, 0):
         diff = closes[i]-closes[i-1]
-        gains += max(diff,0)
-        losses += abs(min(diff,0))
+        if diff >= 0: gains += diff
+        else: losses += abs(diff)
     if losses==0: return 100
     rs = gains/losses
     return 100-(100/(1+rs))
@@ -103,91 +110,76 @@ def ema(candles, period):
 
 # ================== SESSION & NEWS ==================
 def in_session():
-    # London 08:00-11:30 GMT, NY 13:30-17:00 GMT
     now = datetime.utcnow()
     h = now.hour + now.minute/60
     london = 8 <= h <= 11.5
     ny = 13.5 <= h <= 17
     return london or ny
 
-def news_block():
-    # Simulate news filter
-    return random.choice([False]*8+[True]*2)  # 20% chance block
-
 # ================== SCALPER ==================
-async def manage_position(conn, pos):
+async def manage_position(conn, pos_id, sym, entry, ptype):
     global STATS, AI_HOURS
-    pid = pos["id"]
-    entry = float(pos["openPrice"])
-    vol = float(pos["volume"])
-    ptype = pos["type"]
     while True:
-        positions = await conn.get_positions()
-        pos = next((p for p in positions if p["id"]==pid), None)
-        if not pos: return
-        profit = float(pos["unrealizedProfit"])
-        hour = datetime.utcnow().hour
+        try:
+            positions = await conn.get_positions()
+            pos = next((p for p in positions if p["id"]==pos_id), None)
+            if not pos: return
+            
+            profit = float(pos["unrealizedProfit"])
+            hour = datetime.utcnow().hour
 
-        # Trailing stop
-        if profit >= FINAL_TP:
-            await conn.close_position(pid)
-            STATS["wins"] +=1
-            AI_HOURS[hour] = AI_HOURS.get(hour,0)+1
-            await tg_send(f"🎯 <b>TARGET HIT</b> {pos['symbol']} ${profit:.2f}")
-            return
-        elif profit >= LOCK2_PROFIT:
-            await conn.modify_position(pid, entry + LOCK2_SL if ptype=="POSITION_TYPE_BUY" else entry - LOCK2_SL,0)
-        elif profit >= LOCK1_PROFIT:
-            await conn.modify_position(pid, entry + LOCK1_SL if ptype=="POSITION_TYPE_BUY" else entry - LOCK1_SL,0)
-        elif profit <= HARD_SL:
-            await conn.close_position(pid)
-            STATS["losses"] +=1
-            AI_HOURS[hour] = AI_HOURS.get(hour,0)-1
-            await tg_send(f"❌ <b>STOP LOSS HIT</b> {pos['symbol']} ${profit:.2f}")
-            return
-        await asyncio.sleep(2)
+            if profit >= FINAL_TP:
+                await conn.close_position(pos_id)
+                STATS["wins"] +=1
+                AI_HOURS[hour] = AI_HOURS.get(hour,0)+1
+                await tg_send(f"🎯 <b>TARGET HIT</b> {sym} ${profit:.2f}")
+                return
+            elif profit >= LOCK2_PROFIT:
+                sl = entry + LOCK2_SL if ptype=="POSITION_TYPE_BUY" else entry - LOCK2_SL
+                await conn.modify_position(pos_id, round(sl, 2), 0)
+            elif profit >= LOCK1_PROFIT:
+                sl = entry + LOCK1_SL if ptype=="POSITION_TYPE_BUY" else entry - LOCK1_SL
+                await conn.modify_position(pos_id, round(sl, 2), 0)
+            elif profit <= HARD_SL:
+                await conn.close_position(pos_id)
+                STATS["losses"] +=1
+                AI_HOURS[hour] = AI_HOURS.get(hour,0)-1
+                await tg_send(f"❌ <b>STOP LOSS HIT</b> {sym} ${profit:.2f}")
+                return
+        except: pass
+        await asyncio.sleep(5)
 
 async def scalper(acc, conn):
     await tg_send("⚔️ <b>MWIBA BOT V12 ONLINE</b>")
-
     while True:
-        if not BOT_ACTIVE:
-            await asyncio.sleep(5)
-            continue
-        if not in_session() or news_block():
-            await asyncio.sleep(5)
-            continue
+        if not BOT_ACTIVE or not in_session():
+            await asyncio.sleep(10); continue
 
-        positions = await conn.get_positions()
-        if len(positions)>=MAX_POSITIONS:
-            await asyncio.sleep(5)
-            continue
+        try:
+            positions = await conn.get_positions()
+            if len(positions) < MAX_POSITIONS:
+                shuffled_syms = list(SYMBOLS)
+                random.shuffle(shuffled_syms)
+                for sym in shuffled_syms:
+                    if any(p["symbol"]==sym for p in positions): continue
+                    
+                    candles = await acc.get_candles(sym, TIMEFRAME, 100)
+                    if not candles: continue
+                    closes = [c["close"] for c in candles]
+                    price = closes[-1]
+                    e_val = ema(candles, EMA_PERIOD)
+                    r_val = rsi(closes, RSI_PERIOD)
 
-        random.shuffle(SYMBOLS)
-        for sym in SYMBOLS:
-            if any(p["symbol"]==sym for p in positions):
-                continue
-            candles = await acc.get_candles(sym,TIMEFRAME,100)
-            if not candles: continue
-            closes = [c["close"] for c in candles]
-            price = closes[-1]
-            e = ema(candles,EMA_PERIOD)
-            r = rsi(closes,RSI_PERIOD)
-
-            # BUY
-            if price>e and r<30:
-                order = await conn.create_market_buy_order(sym,LOT,0,0)
-                await tg_send(f"🚀 BUY {sym} | RSI {r:.1f}")
-                asyncio.create_task(manage_position(conn, order))
-                await asyncio.sleep(random.uniform(2,4))
-            # SELL
-            elif price<e and r>70:
-                order = await conn.create_market_sell_order(sym,LOT,0,0)
-                await tg_send(f"📉 SELL {sym} | RSI {r:.1f}")
-                asyncio.create_task(manage_position(conn, order))
-                await asyncio.sleep(random.uniform(2,4))
-
-        await asyncio.sleep(10)
+                    if price > e_val and r_val < 30:
+                        order = await conn.create_market_buy_order(sym, LOT, 0, 0)
+                        await tg_send(f"🚀 BUY {sym} | RSI {r_val:.1f}")
+                        asyncio.create_task(manage_position(conn, order["id"], sym, price, "POSITION_TYPE_BUY"))
+                    elif price < e_val and r_val > 70:
+                        order = await conn.create_market_sell_order(sym, LOT, 0, 0)
+                        await tg_send(f"📉 SELL {sym} | RSI {r_val:.1f}")
+                        asyncio.create_task(manage_position(conn, order["id"], sym, price, "POSITION_TYPE_SELL"))
+        except: pass
+        await asyncio.sleep(15)
 
 # ================== MAIN ==================
 async def main():
@@ -198,11 +190,12 @@ async def main():
     await conn.wait_synchronized()
 
     # Health server
-    threading.Thread(target=lambda: HTTPServer(("0.0.0.0",int(os.environ.get("PORT",8080))),BaseHTTPRequestHandler).serve_forever(),daemon=True).start()
+    port = int(os.environ.get("PORT", 8080))
+    threading.Thread(target=lambda: HTTPServer(("0.0.0.0", port), BaseHTTPRequestHandler).serve_forever(), daemon=True).start()
 
     await asyncio.gather(
         telegram_listener(conn),
-        scalper(acc,conn)
+        scalper(acc, conn)
     )
 
 if __name__=="__main__":
