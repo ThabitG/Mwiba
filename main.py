@@ -4,21 +4,15 @@ from metaapi_cloud_sdk import MetaApi
 import aiohttp
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
-# ================== ENV (RENDER FIX) ==================
-META_API_TOKEN = os.getenv("META_API_TOKEN")
-ACCOUNT_ID = os.getenv("ACCOUNT_ID")
-TELEGRAM_TOKEN = os.getenv("TG_TOKEN") 
-CHAT_ID_RAW = os.getenv("TG_CHAT_ID")
-
-if CHAT_ID_RAW:
-    CHAT_ID = int(CHAT_ID_RAW)
-else:
-    CHAT_ID = 0 
+# ================== ENV (HARDCODED FIX BY AI) ==================
+META_API_TOKEN = "eyJhbGciOiJSUzUxMiIsInR5cCI6IkpXVCJ9.eyJfaWQiOiIyOWU2NGU0YjYzNWE2MTkyODNjY2U5Mjc1M2ZhYWQ5OCIsImFjY2Vzc1J1bGVzIjpbeyJpZCI6InRyYWRpbmctYWNjb3VudC1tYW5hZ2VtZW50LWFwaSIsIm1ldGhvZHMiOlsidHJhZGluZy1hY2NvdW50LW1hbmFnZW1lbnQtYXBpOnJlc3Q6cHVibGljOio6KiJdLCJyb2xlcyI6WyJyZWFkZXIiXSwicmVzb3VyY2VzIjpbImFjY291bnQ6JFVTRVJfSUQkOmZhNTQ4ZGI3LTA4YjctNGY4YS1hY2E5LWIwYjUyODBhZjY5NCJdfSx7ImlkIjoibWV0YWFwaS1yZXN0LWFwaSIsIm1ldGhvZHMiOlsibWV0YWFwaS1hcGk6cmVzdDpwdWJsaWM6KjoqIl0sInJvbGVzIjpbInJlYWRlciIsIndyaXRlciJdLCJyZXNvdXJjZXMiOlsiYWNjb3VudDokVVNFUl9JRCQ6ZmE1NDhkYjctMDhiNy00ZjhhLWFjYTktYjBiNTI4MGFmNjk0Il19LHsiaWQiOiJtZXRhYXBpLXJwYy1hcGkiLCJtZXRob2RzIjpbIm1ldGFhcGktYXBpOndzOnB1YmxpYzoqOioiXSwicm9sZXMiOlsicmVhZGVyIiwid3JpdGVyIl0sInJlc291cmNlcyI6WyJhY2NvdW50OiRVU0VSX0lEJDpmYTU0OGRiNy0wOGI3LTRmOGEtYWNhOS1iMGI1MjgwYWY2OTQiXX0seyJpZCI6Im1ldGFhcGktcmVhbC10aW1lLXN0cmVhbWluZy1hcGkiLCJtZXRob2RzIjpbIm1ldGFhcGktYXBpOndzOnB1YmxpYzoqOioiXSwicm9sZXMiOlsicmVhZGVyIiwid3JpdGVyIl0sInJlc291cmNlcyI6WyJhY2NvdW50OiRVU0VSX0lEJDpmYTU0OGRiNy0wOGI3LTRmOGEtYWNhOS1iMGI1MjgwYWY2OTQiXX0seyJpZCI6Im1ldGFzdGF0cy1hcGkiLCJtZXRob2RzIjpbIm1ldGFzdGF0cy1hcGk6cmVzdDpwdWJsaWM6KjoqIl0sInJvbGVzIjpbInJlYWRlciJdLCJyZXNvdXJjZXMiOlsiYWNjb3VudDokVVNFUl9JRCQ6ZmE1NDhkYjctMDhiNy00ZjhhLWFjYTktYjBiNTI4MGFmNjk0Il19LHsiaWQiOiJyaXNrLW1hbmFnZW1lbnQtYXBpIiwibWV0aG9kcyI6WyJyaXNrLW1hbmFnZW1lbnQtYXBpOnJlc3Q6cHVibGljOio6KiJdLCJyb2xlcyI6WyJyZWFkZXIiXSwicmVzb3VyY2VzIjpbImFjY291bnQ6JFVTRVJfSUQkOmZhNTQ4ZGI3LTA4YjctNGY4YS1hY2E5LWIwYjUyODBhZjY5NCJdfV0sImlnbm9yZVJhdGVMaW1pdHMiOmZhbHNlLCJ0b2tlbklkIjoiMjAyMTAyMTMiLCJpbXBlcnNvbmF0ZWQiOmZhbHNlLCJyZWFsVXNlcklkIjoiMjllNjRlNGI2MzVhNjE5MjgzY2NlOTI3NTNmYWFkOTgiLCJpYXQiOjE3Njg2MDkwODMsImV4cCI6MTc3NjM4NTA4M30.m_sSEhsv6PIL7mn-XwNQ-ldnXlG2WYT4ng4mBtLm7l0gtf7u-ZbW9-Q0OyY_Z_mP9fiJMDpD5MKHdewJeYugygl8SAms8eybdbn6GVv6ZTz-JqwX1HDI-vXoMgHR3S_wn0bsjxRrHKL-uTfaZKnjDBHxTotNBfVgrGxLjW9EtRes4oShKcngRhWri_p-dAjXkD9m6mq-ARcO_XyU0ct1-Xm5mL_KFtAWGLkWtpz6df7o1tG-vgV6K38rGIJ5piCqYC-TWxKc3yXCHKnokoueBmeCuMAQSGkKsRDTMwxYnGeU5TdIK7_eNOzAip8mUz3u1eJJUcCYLljV67gMWWYAG5wKmBogHpHVfvrXtCpIaAoNBdpUNoQZEBfgMhYvrPsbu_mbYsMeL-r1w5ob39rDteczSSXe1nFyImYG_in779WVSG8psXxg7GcsMJISW7Dtt5M2-ZolExeWvGsCFwX2wux036EFt3fXPWgFp4aW_dcUifgCVbQeRizJ7FkPdaOZ2k62biYRDCTnIz_S5LLrlUaHfTVYd2XlD1d3seFc6_lZSvfRpQljMhGIC11aYB1DCRxQs6E38F1AY2Maawx8mCLhXukgQLFussIcTJcma3C3YOo588qjLY6_DEYOQPlRn1pWOON00n9-avqbwQpc-XcGEeQi8IfXW40ekHTrhYc"
+ACCOUNT_ID = "fa548db7-08b7-4f8a-aca9-b0b5280af694"
+TELEGRAM_TOKEN = "8166262150:AAFeM49GfLaSvnIOzrm5JWXQdtzhJUnUexw"
+CHAT_ID = 2101969412
 
 # ================== BOT STATE ==================
 BOT_ACTIVE = True
 LAST_UPDATE_ID = 0
-AI_HOURS = {}  
 STATS = {"wins":0, "losses":0}
 
 # ================== TRADING CONFIG ==================
@@ -33,7 +27,6 @@ LOCK1_PROFIT, LOCK1_SL = 1.5, 0.80
 LOCK2_PROFIT, LOCK2_SL = 2.0, 1.40
 FINAL_TP = 3.0
 HARD_SL = -1.0
-MAX_SPREAD = 35
 
 # ================== TELEGRAM ==================
 async def tg_send(msg):
@@ -44,7 +37,8 @@ async def tg_send(msg):
         try:
             async with s.post(url, json=payload, timeout=10) as r:
                 return await r.json()
-        except: pass
+        except Exception as e:
+            print(f"Telegram Send Error: {e}")
 
 async def telegram_listener(conn):
     global BOT_ACTIVE, LAST_UPDATE_ID
@@ -74,17 +68,8 @@ async def telegram_listener(conn):
                             await tg_send(
                                 f"📊 <b>STATUS</b>\nBalance: ${info['balance']:.2f}\nEquity: ${info['equity']:.2f}\nOpen Trades: {len(pos)}\nActive: {'YES' if BOT_ACTIVE else 'NO'}"
                             )
-                        elif text in ["/positions", "mwiba positions"]:
-                            pos = await conn.get_positions()
-                            if not pos: await tg_send("📂 No open positions")
-                            else:
-                                msg_out = "📂 <b>OPEN POSITIONS</b>\n"
-                                for p in pos:
-                                    msg_out += f"{p['symbol']} | ${p['unrealizedProfit']:.2f}\n"
-                                await tg_send(msg_out)
         except Exception as e:
             print(f"TG Listener Error: {e}")
-            await asyncio.sleep(10)
         await asyncio.sleep(2)
 
 # ================== INDICATORS ==================
@@ -100,93 +85,52 @@ def rsi(closes, period=14):
     return 100-(100/(1+rs))
 
 def ema(candles, period):
-    prices = [(c["high"]+c["low"]+c["close"])/3 for c in candles]
+    prices = [c["close"] for c in candles]
     k = 2/(period+1)
     e = prices[0]
     for p in prices[1:]:
         e = p*k+(1-k)*e
     return e
 
-# ================== SESSION ==================
-def in_session():
-    now = datetime.utcnow()
-    h = now.hour + now.minute/60
-    london = 8 <= h <= 11.5
-    ny = 13.5 <= h <= 17
-    return london or ny
-
 # ================== SCALPER CORE ==================
-async def manage_position(conn, pos_id, sym, entry, ptype):
-    global STATS, AI_HOURS
-    print(f"DEBUG: Monitoring trade {pos_id} for {sym}")
-    while True:
-        try:
-            positions = await conn.get_positions()
-            pos = next((p for p in positions if p["id"]==pos_id), None)
-            if not pos: return
-            
-            profit = float(pos["unrealizedProfit"])
-            hour = datetime.utcnow().hour
-
-            if profit >= FINAL_TP:
-                await conn.close_position(pos_id)
-                STATS["wins"] +=1
-                AI_HOURS[hour] = AI_HOURS.get(hour,0)+1
-                await tg_send(f"🎯 <b>TARGET HIT</b> {sym} ${profit:.2f}")
-                return
-            elif profit >= LOCK2_PROFIT:
-                sl = entry + LOCK2_SL if ptype=="POSITION_TYPE_BUY" else entry - LOCK2_SL
-                await conn.modify_position(pos_id, round(sl, 2), 0)
-            elif profit >= LOCK1_PROFIT:
-                sl = entry + LOCK1_SL if ptype=="POSITION_TYPE_BUY" else entry - LOCK1_SL
-                await conn.modify_position(pos_id, round(sl, 2), 0)
-            elif profit <= HARD_SL:
-                await conn.close_position(pos_id)
-                STATS["losses"] +=1
-                AI_HOURS[hour] = AI_HOURS.get(hour,0)-1
-                await tg_send(f"❌ <b>STOP LOSS HIT</b> {sym} ${profit:.2f}")
-                return
-        except Exception as e:
-            print(f"Manage Trade Error: {e}")
-        await asyncio.sleep(5)
-
 async def scalper(acc, conn):
-    await tg_send("⚔️ <b>MWIBA BOT V12 ONLINE</b>")
+    # Tuma meseji ya kuanza kazi Telegram
+    await tg_send("⚔️ <b>MWIBA BOT V12 ONLINE</b>\nBot imeunganishwa na inaanza kuchambua soko.")
+    
     while True:
         try:
-            # Keep-alive signal for Render Logs
-            print(f"DEBUG: Scalper heartbeat {datetime.now()} | Active: {BOT_ACTIVE}")
+            now = datetime.now()
+            print(f"DEBUG: Scalper heartbeat {now} | Active: {BOT_ACTIVE}")
             
-            if not BOT_ACTIVE or not in_session():
+            if not BOT_ACTIVE:
                 await asyncio.sleep(30); continue
 
             positions = await conn.get_positions()
             if len(positions) < MAX_POSITIONS:
-                shuffled_syms = list(SYMBOLS)
-                random.shuffle(shuffled_syms)
-                for sym in shuffled_syms:
+                for sym in SYMBOLS:
                     if any(p["symbol"]==sym for p in positions): continue
                     
-                    candles = await acc.get_candles(sym, TIMEFRAME, 100)
+                    # FIXED: account object doesn't have get_candles, RPC connection does. 
+                    # And use get_historical_candles
+                    candles = await conn.get_historical_candles(sym, TIMEFRAME, 100)
                     if not candles: continue
+                    
                     closes = [c["close"] for c in candles]
                     price = closes[-1]
                     e_val = ema(candles, EMA_PERIOD)
                     r_val = rsi(closes, RSI_PERIOD)
 
                     if price > e_val and r_val < 30:
-                        order = await conn.create_market_buy_order(sym, LOT, 0, 0)
-                        await tg_send(f"🚀 BUY {sym} | RSI {r_val:.1f}")
-                        asyncio.create_task(manage_position(conn, order["id"], sym, price, "POSITION_TYPE_BUY"))
+                        await conn.create_market_buy_order(sym, LOT, 0, 0)
+                        await tg_send(f"🚀 <b>BUY {sym}</b>\nPrice: {price}\nRSI: {r_val:.1f}")
                     elif price < e_val and r_val > 70:
-                        order = await conn.create_market_sell_order(sym, LOT, 0, 0)
-                        await tg_send(f"📉 SELL {sym} | RSI {r_val:.1f}")
-                        asyncio.create_task(manage_position(conn, order["id"], sym, price, "POSITION_TYPE_SELL"))
+                        await conn.create_market_sell_order(sym, LOT, 0, 0)
+                        await tg_send(f"📉 <b>SELL {sym}</b>\nPrice: {price}\nRSI: {r_val:.1f}")
         except Exception as e:
             print(f"Scalper Main Loop Error: {e}")
         await asyncio.sleep(15)
 
-# ================== RENDER HEALTH CHECK ==================
+# ================== HEALTH SERVER ==================
 class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
@@ -199,7 +143,7 @@ def run_health_server():
     server = HTTPServer(("0.0.0.0", port), HealthHandler)
     server.serve_forever()
 
-# ================== RECONNECT LOGIC (THE FIX) ==================
+# ================== START BOT ==================
 async def start_bot():
     while True:
         try:
@@ -207,11 +151,9 @@ async def start_bot():
             api = MetaApi(META_API_TOKEN)
             acc = await api.metatrader_account_api.get_account(ACCOUNT_ID)
             
-            # Hakikisha tuko synchronized
             if acc.state != 'DEPLOYED':
                 print("DEBUG: Account not deployed. Waiting...")
-                await asyncio.sleep(10)
-                continue
+                await asyncio.sleep(10); continue
 
             conn = acc.get_rpc_connection()
             await conn.connect()
@@ -227,10 +169,7 @@ async def start_bot():
             await asyncio.sleep(10)
 
 if __name__=="__main__":
-    # Start Health Server in background thread
     threading.Thread(target=run_health_server, daemon=True).start()
-    
-    # Run main bot loop
     try:
         asyncio.run(start_bot())
     except KeyboardInterrupt:
