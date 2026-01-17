@@ -1,67 +1,19 @@
-import os, asyncio, threading
+import os, asyncio
 from metaapi_cloud_sdk import MetaApi
-import aiohttp
-from http.server import BaseHTTPRequestHandler, HTTPServer
 
-# ================== USALAMA & CONFIG ==================
-META_API_TOKEN = "eyJhbGciOiJSUzUxMiIsInR5cCI6IkpXVCJ9.eyJfaWQiOiIyOWU2NGU0YjYzNWE2MTkyODNjY2U5Mjc1M2ZhYWQ5OCIsImFjY2Vzc1J1bGVzIjpbeyJpZCI6InRyYWRpbmctYWNjb3VudC1tYW5hZ2VtZW50LWFwaSIsIm1ldGhvZHMiOlsidHJhZGluZy1hY2NvdW50LW1hbmFnZW1lbnQtYXBpOnJlc3Q6cHVibGljOio6KiJdLCJyb2xlcyI6WyJyZWFkZXIiXSwicmVzb3VyY2VzIjpbImFjY291bnQ6JFVTRVJfSUQkOmZhNTQ4ZGI3LTA4YjctNGY4YS1hY2E5LWIwYjUyODBhZjY5NCJdfSx7ImlkIjoibWV0YWFwaS1yZXN0LWFwaSIsIm1ldGhvZHMiOlsibWV0YWFwaS1hcGk6cmVzdDpwdWJsaWM6KjoqIl0sInJvbGVzIjpbInJlYWRlciIsIndyaXRlciJdLCJyZXNvdXJjZXMiOlsiYWNjb3VudDokVVNFUl9JRCQ6ZmE1NDhkYjctMDhiNy00ZjhhLWFjYTktYjBiNTI4M0FmNjk0Il19LHsiaWQiOiJtZXRhYXBpLXJwYy1hcGkiLCJtZXRob2RzIjpbIm1ldGFhcGktYXBpOndzOnB1YmxpYzoqOioiXSwicm9sZXMiOlsicmVhZGVyIiwid3JpdGVyIl0sInJlc291cmNlcyI6WyJhY2NvdW50OiRVU0VSX0lEJDpmYTU0OGRiNy0wOGI3LTRmOGEtYWNhOS1iMGI1MjgwYWY2OTQiXX0seyJpZCI6Im1ldGFhcGktcmVhbC10aW1lLXN0cmVhbWluZy1hcGkiLCJtZXRob2RzIjpbIm1ldGFhcGktYXBpOndzOnB1YmxpYzoqOioiXSwicm9sZXMiOlsicmVhZGVyIiwid3JpdGVyIl0sInJlc291cmNlcyI6WyJhY2NvdW50OiRVU0VSX0lEJDpmYTU0OGRiNy0wOGI3LTRmOGEtYWNhOS1iMGI1MjgwYWY2OTQiXX0seyJpZCI6Im1ldGFzdGF0cy1hcGkiLCJtZXRob2RzIjpbIm1ldGFzdGF0cy1hcGk6cmVzdDpwdWJsaWM6KjoqIl0sInJvbGVzIjpbInJlYWRlciJdLCJyZXNvdXJjZXMiOlsiYWNjb3VudDokVVNFUl9JRCQ6ZmE1NDhkYjctMDhiNy00ZjhhLWFjYTktYjBiNTI4M0FmNjk0Il19LHsiaWQiOiJyaXNrLW1hbmFnZW1lbnQtYXBpIiwibWV0aG9kcyI6WyJyaXNrLW1hbmFnZW1lbnQtYXBpOnJlc3Q6cHVibGljOio6KiJdLCJyb2xlcyI6WyJyZWFkZXIiXSwicmVzb3VyY2VzIjpbImac2NvdW50OiRVU0VSX0lEJDpmYTU0OGRiNy0wOGI3LTRmOGEtYWNhOS1iMGI1MjgwYWY2OTQiXX0seyJpZCI6Im1ldGFhcGktcmVhbC10aW1lLXN0cmVhbWluZy1hcGkiLCJtZXRob2RzIjpbIm1ldGFhcGktYXBpOndzOnB1YmxpYzoqOioiXSwicm9sZXMiOlsicmVhZGVyIiwid3JpdGVyIl0sInJlc291cmNlcyI6WyJhY2NvdW50OiRVU0VSX0lEJDpmYTU0OGRiNy0wOGI3LTRmOGEtYWNhOS1iMGI1MjgwYWY2OTQiXX0seyJpZCI6Im1ldGFzdGF0cy1hcGkiLCJtZXRob2RzIjpbIm1ldGFzdGF0cy1hcGk6cmVzdDpwdWJsaWM6KjoqIl0sInJvbGVzIjpbInJlYWRlciJdLCJyZXNvdXJjZXMiOlsiYWNjb3VudDokVVNFUl9JRCQ6ZmE1NDhkYjctMDhiNy00ZjhhLWFjYTktYjBiNTI4M0FmNjk0Il19LHsiaWQiOiJyaXNrLW1hbmFnZW1lbnQtYXBpIiwibWV0aG9kcyI6WyJyaXNrLW1hbmFnZW1lbnQtYXBpOnJlc3Q6cHVibGljOio6KiJdLCJyb2xlcyI6WyJyZWFkZXIiXSwicmVzb3VyY2VzIjpbImFjY291bnQ6JFVTRVJfSUQkOmZhNTQ4ZGI3LTA4YjctNGY4YS1hY2E5LWIwYjUyODBhZjY5NCJdfV0sImlnbm9yZVJhdGVMaW1pdHMiOmZhbHNlLCJ0b2tlbklkIjoiMjAyMTAyMTMiLCJpbXBlcnNvbmF0ZWQiOmZhbHNlLCJyZWFsVXNlcklkIjoiMjllNjRlNGI2MzVhNjE5MjgzY2NlOTI3NTNmYWFkOTgiLCJpYXQiOjE3Njg2MDkwODMsImV4cCI6MTc3NjM4NTA4M30.m_sSEhsv6PIL7mn-XwNQ-ldnXlG2WYT4ng4mBtLm7l0gtf7u-ZbW9-Q0OyY_Z_mP9fiJMDpD5MKHdewJeYugygl8SAms8eybdbn6GVv6ZTz-JqwX1HDI-vXoMgHR3S_wn0bsjxRrHKL-uTfaZKnjDBHxTotNBfVgrGxLjW9EtRes4oShKcngRhWri_p-dAjXkD9m6mq-ARcO_XyU0ct1-Xm5mL_KFtAWGLkWtpz6df7o1tG-vgV6K38rGIJ5piCqYC-TWxKc3yXCHKnokoueBmeCuMAQSGkKsRDTMwxYnGeU5TdIK7_eNOzAip8mUz3u1eJJUcCYLljV67gMWWYAG5wKmBogHpHVfvrXtCpIaAoNBdpUNoQZEBfgMhYvrPsbu_mbYsMeL-r1w5ob39rDteczSSXe1nFyImYG_in779WVSG8psXxg7GcsMJISW7Dtt5M2-ZolExeWvGsCFwX2wux036EFt3fXPWgFp4aW_dcUifgCVbQeRizJ7FkPdaOZ2k62biYRDCTnIz_S5LLrlUaHfTVYd2XlD1d3seFc6_lZSvfRpQljMhGIC11aYB1DCRxQs6E38F1AY2Maawx8mCLhXukgQLFussIcTJcma3C3YOo588qjLY6_DEYOQPlRn1pWOON00n9-avqbwQpc-XcGEeQi8IfXW40ekHTrhYc"
+# HAKIKISHA TOKEN HII HAIKUKATIKA WAKATI WA KU-COPY
+META_API_TOKEN = "eyJhbGciOiJSUzUxMiIsInR5cCI6IkpXVCJ9.eyJfaWQiOiIyOWU2NGU0YjYzNWE2MTkyODNjY2U5Mjc1M2ZhYWQ5OCIsImFjY2Vzc1J1bGVzIjpbeyJpZCI6InRyYWRpbmctYWNjb3VudC1tYW5hZ2VtZW50LWFwaSIsIm1ldGhvZHMiOlsidHJhZGluZy1hY2NvdW50LW1hbmFnZW1lbnQtYXBpOnJlc3Q6cHVibGljOio6KiJdLCJyb2xlcyI6WyJyZWFkZXIiXSwicmVzb3VyY2VzIjpbImFjY291bnQ6JFVTRVJfSUQkOmZhNTQ4ZGI3LTA4YjctNGY4YS1hY2E5LWIwYjUyODBhZjY5NCJdfSx7ImlkIjoibWV0YWFwaS1yZXN0LWFwaSIsIm1ldGhvZHMiOlsibWV0YWFwaS1hcGk6cmVzdDpwdWJsaWM6KjoqIl0sInJvbGVzIjpbInJlYWRlciIsIndyaXRlciJdLCJyZXNvdXJjZXMiOlsiYWNjb3VudDokVVNFUl9JRCQ6ZmE1NDhkYjctMDhiNy00ZjhhLWFjYTktYjBiNTI4M0FmNjk0Il19LHsiaWQiOiJtZXRhYXBpLXJwYy1hcGkiLCJtZXRob2RzIjpbIm1ldGFhcGktYXBpOndzOnB1YmxpYzoqOioiXSwicm9sZXMiOlsicmVhZGVyIiwid3JpdGVyIl0sInJlc291cmNlcyI6WyJhY2NvdW50OiRVU0VSX0lEJDpmYTU0OGRiNy0wOGI3LTRmOGEtYWNhOS1iMGI1MjgwYWY2OTQiXX0seyJpZCI6Im1ldGFhcGktcmVhbC10aW1lLXN0cmVhbWluZy1hcGkiLCJtZXRob2RzIjpbIm1ldGFhcGktYXBpOndzOnB1YmxpYzoqOioiXSwicm9sZXMiOlsicmVhZGVyIiwid3JpdGVyIl0sInJlc291cmNlcyI6WyJhY2NvdW50OiRVU0VSX0lEJDpmYTU0OGRiNy0wOGI3LTRmOGEtYWNhOS1iMGI1MjgwYWY2OTQiXX0seyJpZCI6Im1ldGFzdGF0cy1hcGkiLCJtZXRob2RzIjpbIm1ldGFzdGF0cy1hcGk6cmVzdDpwdWJsaWM6KjoqIl0sInJvbGVzIjpbInJlYWRlciJdLCJyZXNvdXJjZXMiOlsiYWNjb3VudDokVVNFUl9JRCQ6ZmE1NDhkYjctMDhiNy00ZjhhLWFjYTktYjBiNTI4M0FmNjk0Il19LHsiaWQiOiJyaXNrLW1hbmFnZW1lbnQtYXBpIiwibWV0aG9kcyI6WyJyaXNrLW1hbmFnZW1lbnQtYXBpOnJlc3Q6cHVibGljOio6KiJdLCJyb2xlcyI6WyJyZWFkZXIiXSwicmVzb3VyY2VzIjpbImFjY291bnQ6JFVTRVJfSUQkOmZhNTQ4ZGI3LTA4YjctNGY4YS1hY2E5LWIwYjUyODBhZjY5NCJdfV0sImlnbm9yZVJhdGVMaW1pdHMiOmZhbHNlLCJ0b2tlbklkIjoiMjAyMTAyMTMiLCJpbXBlcnNvbmF0ZWQiOmZhbHNlLCJyZWFsVXNlcklkIjoiMjllNjRlNGI2MzVhNjE5MjgzY2NlOTI3NTNmYWFkOTgiLCJpYXQiOjE3Njg2MDkwODMsImV4cCI6MTc3NjM4NTA4M30.m_sSEhsv6PIL7mn-XwNQ-ldnXlG2WYT4ng4mBtLm7l0gtf7u-ZbW9-Q0OyY_Z_mP9fiJMDpD5MKHdewJeYugygl8SAms8eybdbn6GVv6ZTz-JqwX1HDI-vXoMgHR3S_wn0bsjxRrHKL-uTfaZKnjDBHxTotNBfVgrGxLjW9EtRes4oShKcngRhWri_p-dAjXkD9m6mq-ARcO_XyU0ct1-Xm5mL_KFtAWGLkWtpz6df7o1tG-vgV6K38rGIJ5piCqYC-TWxKc3yXCHKnokoueBmeCuMAQSGkKsRDTMwxYnGeU5TdIK7_eNOzAip8mUz3u1eJJUcCYLljV67gMWWYAG5wKmBogHpHVfvrXtCpIaAoNBdpUNoQZEBfgMhYvrPsbu_mbYsMeL-r1w5ob39rDteczSSXe1nFyImYG_in779WVSG8psXxg7GcsMJISW7Dtt5M2-ZolExeWvGsCFwX2wux036EFt3fXPWgFp4aW_dcUifgCVbQeRizJ7FkPdaOZ2k62biYRDCTnIz_S5LLrlUaHfTVYd2XlD1d3seFc6_lZSvfRpQljMhGIC11aYB1DCRxQs6E38F1AY2Maawx8mCLhXukgQLFussIcTJcma3C3YOo588qjLY6_DEYOQPlRn1pWOON00n9-avqbwQpc-XcGEeQi8IfXW40ekHTrhYc"
 ACCOUNT_ID = "fa548db7-08b7-4f8a-aca9-b0b5280af694"
-TELEGRAM_TOKEN = "8166262150:AAFeM49GfLaSvnIOzrm5JWXQdtzhJUnUexw"
-CHAT_ID = 2101969412
 
-ASSETS = {"XAUUSD": "Gold Spot", "NAS100": "Nasdaq 100", "US30": "Dow Jones 30"}
-LOT = 0.01
-
-# ================== INDICATORS ==================
-def calculate_rsi(prices, period=14):
-    if len(prices) < period + 1: return 50
-    deltas = [prices[i] - prices[i-1] for i in range(1, len(prices))]
-    gains = [max(0, d) for d in deltas]
-    losses = [max(0, -d) for d in deltas]
-    avg_gain = sum(gains[-period:]) / period
-    avg_loss = sum(losses[-period:]) / period
-    if avg_loss == 0: return 100
-    return 100 - (100 / (1 + (avg_gain / avg_loss)))
-
-# ================== CORE SCALPER ==================
-async def scalper(conn):
-    print("--- ⚔️ MWIBA V17 STABILIZED STARTING ---")
-    for sym in ASSETS:
-        try: await conn.subscribe_to_market_data(sym)
-        except: pass
-
-    while True:
-        try:
-            for symbol, name in ASSETS.items():
-                # Tiba ya 'astimezone': Hatutumii get_historical_candles
-                # Tunatumia get_symbol_price kupata bei ghafi (Raw Price)
-                p_data = await conn.get_symbol_price(symbol)
-                if not p_data or 'bid' not in p_data: continue
-                
-                bid = float(p_data['bid'])
-                # Hapa bot ingekuwa na mbinu ya kuhifadhi bei (local price buffer)
-                # Kwa mfano huu, tunahakikisha kosa halitokei
-                print(f"[{name}] Live Price: {bid}")
-                
-            await asyncio.sleep(10)
-        except Exception as e:
-            print(f"Scalper Heartbeat: {e}")
-            await asyncio.sleep(5)
-
-async def main():
+async def test_connection():
     api = MetaApi(META_API_TOKEN)
     try:
-        acc = await api.metatrader_account_api.get_account(ACCOUNT_ID)
-        await acc.wait_connected()
-        conn = acc.get_rpc_connection()
-        await conn.connect()
-        await conn.wait_synchronized()
-        print("--- BOT SYNCED ON VPS ---")
-        await scalper(conn)
+        print("Jaribio la kuunganisha...")
+        account = await api.metatrader_account_api.get_account(ACCOUNT_ID)
+        await account.wait_connected()
+        print("HONGERA! Token imekubali na bot imeunganishwa!")
     except Exception as e:
-        print(f"Boot Error: {e}")
+        print(f"Bado kuna kosa la Token: {e}")
 
 if __name__ == "__main__":
-    # Health check server ili kuzuia VPS isizime
-    threading.Thread(target=lambda: HTTPServer(('0.0.0.0', 8080), type('H', (BaseHTTPRequestHandler,), {'do_GET': lambda s: (s.send_response(200), s.end_headers())})).serve_forever(), daemon=True).start()
-    asyncio.run(main())
+    asyncio.run(test_connection())
